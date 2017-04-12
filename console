@@ -1,0 +1,316 @@
+#!/bin/bash
+source ./.env
+
+function help {
+    echo -e "\033[32mEIMS Solution Docker Controller v1\033[0m"
+    echo -e ""
+    echo -e "\033[32musage: ${0} [<option>]\033[0m"
+    echo -e ""
+    echo -e "\033[32moptions:\033[0m"
+    echo -e "\033[32m    build : \033[0m build EIMS container image。"
+    echo -e "\033[32m    start : \033[0m start container(s)。"
+    echo -e "\033[32m    stop : \033[0m stop container(s)。"
+    echo -e "\033[32m    restart : \033[0m restart service container(s) and service。"
+    echo -e "\033[32m    exec : \033[0m connect to container。[${DOCKER_NAME}]"
+    echo -e "\033[32m    logs : \033[0m tail service log。[nginx access / (error), redis / (default laravel)]"
+    echo -e "\033[32m    db : \033[0m connect to database。"
+    echo -e "\033[32m    redis : \033[0m connect to redis-cli。[cli command]"
+    echo -e "\033[32m    rm : \033[0m remove container(s)。[-f]"
+    echo -e "\033[32m    ps : \033[0m docker ps。[-a]"
+    echo -e "\033[32m    clear : \033[0m remove container(s) and images。"
+    echo -e "\033[32m    reload : \033[0m reload default.conf and xdebug.ini。"
+    echo -e "\033[32m    service : \033[0m main container service control。[start / restart / stop]"
+    echo -e "\033[32m    alias : \033[0m register alias"
+    echo -e "\033[32m    console : \033[0m start container(s) / if started will be exec to ${DOCKER_NAME} container。"
+}
+
+# remove container
+if [ "${1}" == "rm" ]; then
+    if [ "${2}" == "-f" ]; then
+        SH=$(docker rm -f ${DOCKER_NAME})
+    else
+        SH=$(docker rm ${DOCKER_NAME})
+    fi
+
+    rm -rf "$(pwd)/storage/docker/default.conf"
+    rm -rf "$(pwd)/storage/docker/xdebug.ini"
+    #if [ ! -z ${DOCKER_PROXY_NAME} ]; then
+    #    SH=$(docker rm ${DOCKER_PROXY_NAME} ${2})
+    #fi
+
+    SERVICE_IS_RUNNING=$(docker inspect --format="{{ .State.Running }}" ${DOCKER_NAME} 2> /dev/null)
+
+    if [ "${SERVICE_IS_RUNNING}" == "" ]; then
+        echo -e "\033[32mContainer Removed!\033[0m"
+    fi
+    exit
+fi
+
+# force remove container(s) and images
+if [ "${1}" == "clear" ]; then
+    echo -e "\033[32mWould You like to stop / remove ${DOCKER_NAME} container?(y/n)\033[0m"
+    read ans
+    if [ ${ans} = 'n' ]; then
+        exit
+    else
+        SH=$(docker rm ${DOCKER_NAME} -f)
+        SH=$(docker rmi ${DOCKER_IMAGE} -f)
+        #if [ ! -z ${DOCKER_PROXY_NAME} ]; then
+        #    SH=$(docker rm ${DOCKER_PROXY_NAME} -f)
+        #    SH=$(docker rmi ${DOCKER_PROXY_NAME} jwilder/nginx-proxy:latest centos:6 -f)
+        #fi
+        echo -e "\033[32mContainer and Images Removed!\033[0m"
+    fi
+    exit
+fi
+
+# stop container(s)
+if [ "${1}" == "stop" ]; then
+    #if [ ! -z ${DOCKER_PROXY_NAME} ]; then
+    #    SH=$(docker stop ${DOCKER_PROXY_NAME})
+    #fi
+
+    SH=$(docker stop ${DOCKER_NAME})
+    echo -e "\033[32mContainer Stopped!\033[0m"
+exit
+fi
+
+# same to docker ps
+if [ "${1}" == "ps" ]; then
+    docker ps ${2}
+exit
+fi
+
+# register alias
+if [ "${1}" == "alias" ]; then
+    echo -e "\033[32m Input Alias Key! [enter to exit]\033[0m"
+    read answer
+    if [ ! -z ${answer} ]; then
+        echo "alias ${answer}='./console'" >> ~/.bash_profile
+        echo -e "\033[32mNOTICE::copy and paste to command line [ source ~/.bash_profile ] and run it!\033[0m"
+        exit
+    else
+        echo -e "\033[32mCanceled!\033[0m"
+        exit
+    fi
+exit
+fi
+
+# reload default.conf and xdebug.ini
+if [ "${1}" == "reload" ]; then
+    rm -rf "$(pwd)/storage/docker/default.conf"
+    rm -rf "$(pwd)/storage/docker/xdebug.ini"
+    cp "$(pwd)/storage/docker/default.example.conf" "$(pwd)/storage/docker/default.conf"
+    cp "$(pwd)/storage/docker/xdebug.example.ini" "$(pwd)/storage/docker/xdebug.ini"
+    if [ "${APP_ENV}" != "dev" ]; then
+        IP=$(ipconfig getifaddr en0)
+        SH=$(echo "xdebug.remote_host=${IP}" >> "$(pwd)/storage/docker/xdebug.ini")
+        SH=$(echo "xdebug.remote_port=900${DOCKER_PROJECT_NUM}" >> "$(pwd)/storage/docker/xdebug.ini")
+    fi
+    echo -e "\033[32mConfig Reloaded!\033[0m"
+    if [ "${APP_ENV}" != "dev" ]; then
+        ./console restart
+    else
+        ./console service restart
+    fi
+exit
+fi
+
+# restart container(s) and service
+if [ "${1}" == "restart" ]; then
+    if [ ! -z ${DOCKER_PROXY_NAME} ]; then
+        SH=$(docker restart ${DOCKER_PROXY_NAME})
+    fi
+
+    SH=$(docker restart ${DOCKER_NAME})
+    CONTAINER_IP="$(docker inspect --format '{{ .NetworkSettings.IPAddress }}' ${DOCKER_NAME})"
+    echo -e "\033[32mDB CONTAINER IP: "${CONTAINER_IP}"\033[0m"
+    sleep 2s
+    ./console service restart
+    echo -e "\033[32mContainer Restarted!\033[0m"
+    exit
+fi
+
+# service start, stop and restart
+if [ "${1}" == "service" ]; then
+    if [ "${2}" == "" ]; then
+        ./console service start
+    fi
+
+    if [ ! -z "${2}" ]; then
+        SH=$(docker exec -it ${DOCKER_NAME} service mysql ${2})
+        SH=$(docker exec -it ${DOCKER_NAME} service nginx ${2})
+        SH=$(docker exec -it ${DOCKER_NAME} service php-fpm ${2})
+        SH=$(docker exec -it ${DOCKER_NAME} service supervisord ${2})
+        SH=$(docker exec -it ${DOCKER_NAME} service redis ${2})
+        SH=$(docker exec -it ${DOCKER_NAME} redis-cli config set stop-writes-on-bgsave-error no)
+        echo -e "\033[32mService "${2}"ed!\033[0m"
+    fi
+    exit;
+fi
+
+# start container(s) and service
+if [ "${1}" == "start" ]; then
+
+    if [ -z ${ADMIN_DOMAIN} ] || [ -z ${SERVICE_DOMAIN} ]; then
+        echo 'NOTICE::Defend in .env file ADMIN_DOMAIN,SERVICE_DOMAIN parameter first and retry. ex) ADMIN_DOMAIN=admin.eims.local'
+        exit
+    fi
+
+    SERVICE_IS_RUNNING=$(docker inspect --format="{{ .State.Running }}" ${DOCKER_NAME} 2> /dev/null)
+
+    if [ ! -z ${DOCKER_PROXY_NAME} ]; then
+        PROXY_IS_RUNNING=$(docker inspect --format="{{ .State.Running }}" ${DOCKER_PROXY_NAME} 2> /dev/null)
+        if [ "${PROXY_IS_RUNNING}" == "false" ]; then
+            SH=$(docker start ${DOCKER_PROXY_NAME})
+            ./console service start
+        fi
+
+        if [ "${PROXY_IS_RUNNING}" == "" ]; then
+            SH=$(docker run -d -p 80:80 -v /var/run/docker.sock:/tmp/docker.sock:ro --name ${DOCKER_PROXY_NAME} jwilder/nginx-proxy:latest)
+            echo -e "\033[32m::Proxy Running::\033[0m"
+            echo ""
+        fi
+    fi
+
+    if [ "${SERVICE_IS_RUNNING}" == "" ]; then
+        cp "$(pwd)/storage/docker/default.example.conf" "$(pwd)/storage/docker/default.conf"
+        cp "$(pwd)/storage/docker/xdebug.example.ini" "$(pwd)/storage/docker/xdebug.ini"
+        if [ "${APP_ENV}" != "dev" ]; then
+            IP=$(ipconfig getifaddr en0)
+            SH=$(echo "xdebug.remote_host=${IP}" >> "$(pwd)/storage/docker/xdebug.ini")
+            SH=$(echo "xdebug.remote_port=900${DOCKER_PROJECT_NUM}" >> "$(pwd)/storage/docker/xdebug.ini")
+        fi
+        if [ "${APP_ENV}" == "dev" ]; then
+            SH=$(docker run -dti -e VIRTUAL_HOST=${ADMIN_DOMAIN},${SERVICE_DOMAIN} --privileged=true --expose 80 --expose "900${DOCKER_PROJECT_NUM}" -p "3306${DOCKER_PROJECT_NUM}":3306 -p "6379${DOCKER_PROJECT_NUM}":6379 -v $(pwd):/www -v "$(pwd)/storage/docker/default.conf":/etc/nginx/conf.d/default.conf -v /workspaces/mariadb:/var/lib/mysql --name ${DOCKER_NAME} ${DOCKER_IMAGE})
+        else
+            SH=$(docker run -dti -e VIRTUAL_HOST=${ADMIN_DOMAIN},${SERVICE_DOMAIN} --privileged=true --expose 80 --expose "900${DOCKER_PROJECT_NUM}" -p "3306${DOCKER_PROJECT_NUM}":3306 -p "6379${DOCKER_PROJECT_NUM}":6379 -v $(pwd):/www -v "$(pwd)/storage/docker/default.conf":/etc/nginx/conf.d/default.conf -v "$(pwd)/storage/docker/xdebug.ini":/etc/php.d/20-xdebug.ini --name ${DOCKER_NAME} ${DOCKER_IMAGE})
+        fi
+
+        SH=$(docker exec -it ${DOCKER_NAME} service mysql start)
+        SH=$(docker exec -it ${DOCKER_NAME} mysql -s -e "INSERT INTO mysql.user (host,user,password) VALUES ('%','${DB_USERNAME}',password('${DB_PASSWORD}'));")
+        SH=$(docker exec -it ${DOCKER_NAME} mysql -s -e "UPDATE mysql.user set password=password('${DB_PASSWORD}');")
+        SH=$(docker exec -it ${DOCKER_NAME} mysql -s -e "CREATE DATABASE ${DB_DATABASE} CHARACTER SET = 'utf8' COLLATE = 'utf8_general_ci';")
+        SH=$(docker exec -it ${DOCKER_NAME} mysql -s -e "GRANT ALL PRIVILEGES ON *.* TO '${DB_USERNAME}'@'%';")
+        SH=$(docker exec -it ${DOCKER_NAME} mysql -s -e "FLUSH PRIVILEGES;")
+
+        ./console service
+        SH=$(docker exec -it ${DOCKER_NAME} mysql -s -e "UPDATE mysql.user set password=password('${DB_PASSWORD}');")
+        echo -e "\033[32m::Host Info::\033[0m"
+        echo -e "\033[32mAdmin Host: http://${ADMIN_DOMAIN}\033[0m"
+        echo -e "\033[32mService Host: http://${SERVICE_DOMAIN}\033[0m"
+        echo ""
+        echo -e "\033[32m::Database Info::\033[0m"
+        echo -e "\033[32mDB Name: ${DB_DATABASE}\033[0m"
+        echo -e "\033[32mDB Port: 3306${DOCKER_PROJECT_NUM}\033[0m"
+        echo -e "\033[32mDB User: ${DB_USERNAME}\033[0m"
+        echo -e "\033[32mDB PWD: ${DB_PASSWORD}\033[0m"
+        echo ""
+        if [ "${APP_ENV}" != "dev" ]; then
+            echo -e "\033[32mDB XDEBUG PORT: "900${DOCKER_PROJECT_NUM}"\033[0m"
+        fi
+        echo -e "\033[32mDB REDIS PORT: "6379${DOCKER_PROJECT_NUM}"\033[0m"
+        CONTAINER_IP="$(docker inspect --format '{{ .NetworkSettings.IPAddress }}' ${DOCKER_NAME})"
+        echo -e "\033[32mDB CONTAINER IP: "${CONTAINER_IP}"\033[0m"
+        echo ""
+        echo -e "\033[32mContainer Created!\033[0m"
+        exit
+    fi
+
+    if [ "${SERVICE_IS_RUNNING}" == "false" ]; then
+        SH=$(docker start ${DOCKER_NAME})
+        echo -e "\033[32mContainer Started!\033[0m"
+        ./console service start
+        exit;
+    fi
+fi
+
+# connect to container
+if [ "${1}" == "exec" ]; then
+    if [ "${2}" == "" ]; then
+        help
+        exit
+    fi
+
+    docker exec -it ${2} bash
+    exit
+fi
+
+# connect to docker database
+if [ "${1}" == "db" ]; then
+    docker exec -it ${DOCKER_NAME} mysql -u ${DB_USERNAME} -p${DB_PASSWORD} ${DB_DATABASE}
+exit
+fi
+
+# connect to docker redis-cli
+if [ "${1}" == "redis" ]; then
+    if [ "${REDIS_HOST}" == "127.0.0.1" ] || [ "${REDIS_HOST}" == "localhost" ]; then
+        docker exec -it ${DOCKER_NAME} redis-cli ${2} ${3}
+    else
+        docker exec -it ${DOCKER_NAME} redis-cli -h ${REDIS_HOST} -p ${REDIS_PORT} ${2} ${3}
+    fi
+exit
+fi
+
+# view log
+if [ "${1}" == "logs" ]; then
+    if [ "${2}" == "" ] || [ "${2}" == "laravel" ]; then
+        docker exec -it ${DOCKER_NAME} tail -f /www/storage/logs/laravel.log
+        exit
+    fi
+
+    if [ "${2}" == "nginx" ]; then
+        if [ "${3}" == "access" ] || [ "${3}" == "" ]; then
+            docker exec -it ${DOCKER_NAME} tail -f /var/log/nginx/access.log
+            exit
+        fi
+        docker exec -it ${DOCKER_NAME} tail -f /var/log/nginx/error.log
+        exit
+    fi
+
+    if [ "${2}" == "redis" ]; then
+        if [ "${REDIS_HOST}" == "127.0.0.1" ] || [ "${REDIS_HOST}" == "localhost" ]; then
+            docker exec -it ${DOCKER_NAME} redis-cli monitor
+        else
+            docker exec -it ${DOCKER_NAME} redis-cli -h ${REDIS_HOST} -p ${REDIS_PORT} monitor
+        fi
+        exit
+    fi
+exit
+fi
+
+# build container image
+if [ "${1}" == "build" ]; then
+    #docker pull jwilder/nginx-proxy:latest
+    #docker pull centos:6
+    docker build -t ${DOCKER_IMAGE} -f "$(pwd)/storage/docker/Dockerfile" .
+exit
+fi
+
+# helper
+if [ "${1}" == "-H" ] || [ "${1}" == "--help" ]; then
+    help
+    exit
+fi
+
+if [ "${1}" == "" ]; then
+        # check container is running
+        IS_RUNNING=$(docker inspect --format="{{ .State.Running }}" ${DOCKER_NAME} 2> /dev/null)
+
+        if [ "${IS_RUNNING}" == "true" ]; then
+            ./console exec ${DOCKER_NAME}
+        fi
+
+        if [ "${IS_RUNNING}" == "" ]; then
+            #./console build
+            ./console start
+        fi
+
+        if [ "${IS_RUNNING}" == "false" ]; then
+            ./console start
+        fi
+else
+    echo -e "\033[32m${1} - Parameter not found\033[0m"
+    help
+fi
+exit
